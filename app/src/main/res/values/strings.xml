@@ -5,6 +5,7 @@
     <string name="em_conversation_menu_group">Create group</string>
 
     <string name="system_copy_success">Successfully copied to clipboard</string>
+    <string name="copied">Copied</string>
 
     <string name="cancel">Cancel</string>
     <string name="confirm">OK</string>

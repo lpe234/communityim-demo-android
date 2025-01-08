@@ -247,6 +247,7 @@ class AboutMeFragment: ChatUIKitBaseFragment<DemoFragmentAboutMeBinding>(), View
                                 substring
                             )
                         )
+                        mContext.showToast(resources.getString(R.string.copied))
                     }
                 }
 
