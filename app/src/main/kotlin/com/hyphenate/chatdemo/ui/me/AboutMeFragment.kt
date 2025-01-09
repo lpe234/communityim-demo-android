@@ -1,43 +1,74 @@
 package com.hyphenate.chatdemo.ui.me
 
+import android.Manifest
+import android.app.Activity
+import android.app.Activity.RESULT_OK
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
+import android.text.TextUtils
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.hyphenate.chatdemo.DemoApplication
 import com.hyphenate.chatdemo.DemoHelper
 import com.hyphenate.chatdemo.R
+import com.hyphenate.chatdemo.callkit.CallKitManager.showSelectDialog
 import com.hyphenate.chatdemo.common.DemoConstant
+import com.hyphenate.chatdemo.common.DeveloperModeHelper
 import com.hyphenate.chatdemo.common.PresenceCache
 import com.hyphenate.chatdemo.controller.PresenceController
 import com.hyphenate.chatdemo.databinding.DemoFragmentAboutMeBinding
 import com.hyphenate.chatdemo.interfaces.IPresenceResultView
 import com.hyphenate.chatdemo.ui.login.LoginActivity
+import com.hyphenate.chatdemo.ui.me.controller.CameraAndCroppingController
+import com.hyphenate.chatdemo.utils.CameraAndCropFileUtils
 import com.hyphenate.chatdemo.utils.EasePresenceUtil
 import com.hyphenate.chatdemo.viewmodel.LoginViewModel
 import com.hyphenate.chatdemo.viewmodel.PresenceViewModel
+import com.hyphenate.chatdemo.viewmodel.ProfileInfoViewModel
 import com.hyphenate.easeui.ChatUIKitClient
 import com.hyphenate.easeui.base.ChatUIKitBaseFragment
 import com.hyphenate.easeui.common.ChatClient
+import com.hyphenate.easeui.common.ChatImageUtils
 import com.hyphenate.easeui.common.ChatLog
 import com.hyphenate.easeui.common.ChatPresence
 import com.hyphenate.easeui.common.bus.ChatUIKitFlowBus
 import com.hyphenate.easeui.common.dialog.CustomDialog
+import com.hyphenate.easeui.common.dialog.SimpleListSheetDialog
 import com.hyphenate.easeui.common.extensions.catchChatException
 import com.hyphenate.easeui.common.extensions.dpToPx
+import com.hyphenate.easeui.common.extensions.mainScope
 import com.hyphenate.easeui.common.extensions.showToast
+import com.hyphenate.easeui.common.permission.PermissionCompat
+import com.hyphenate.easeui.common.utils.ChatUIKitCompat
+import com.hyphenate.easeui.common.utils.ChatUIKitFileUtils
 import com.hyphenate.easeui.configs.setStatusStyle
 import com.hyphenate.easeui.feature.contact.ChatUIKitBlockListActivity
+import com.hyphenate.easeui.interfaces.SimpleListSheetItemClickListener
 import com.hyphenate.easeui.model.ChatUIKitEvent
+import com.hyphenate.easeui.model.ChatUIKitMenuItem
 import com.hyphenate.easeui.widget.ChatUIKitCustomAvatarView
+import com.yalantis.ucrop.UCrop
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 class AboutMeFragment: ChatUIKitBaseFragment<DemoFragmentAboutMeBinding>(), View.OnClickListener,
     ChatUIKitCustomAvatarView.OnPresenceClickListener, IPresenceResultView {
@@ -47,13 +78,35 @@ class AboutMeFragment: ChatUIKitBaseFragment<DemoFragmentAboutMeBinding>(), View
      */
     private val clipboard by lazy { mContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
 
+    private val cameraAndCroppingController: CameraAndCroppingController by lazy {
+        CameraAndCroppingController(mContext)
+    }
+
     private lateinit var loginViewModel: LoginViewModel
 
     private val presenceViewModel by lazy { ViewModelProvider(this)[PresenceViewModel::class.java] }
     private val presenceController by lazy { PresenceController(mContext,presenceViewModel) }
 
+    //
+    private var showSelectDialog:SimpleListSheetDialog? = null
+    private lateinit var model: ProfileInfoViewModel
+    private var imageUri: Uri?= null
+
     companion object{
         private val TAG = AboutMeFragment::class.java.simpleName
+
+        //
+        private val REQUEST_TAKE_PHOTO = 0
+        private val REQUEST_SELECT_IMAGE_IN_ALBUM = 1
+
+        val IMAGE_REQUEST_CODE = 100
+        private const val REQUEST_CODE_STORAGE_PICTURE = 111
+        private const val REQUEST_CODE_CAMERA = 112
+        private const val REQUEST_CODE_LOCAL_EDIT = 113
+        private const val RESULT_CODE_CAMERA = 114
+        private const val RESULT_CODE_LOCAL = 115
+        private const val RESULT_CODE_UPDATE_NAME = 116
+        private const val RESULT_REFRESH = "isRefresh"
     }
 
     override fun getViewBinding(
@@ -98,6 +151,8 @@ class AboutMeFragment: ChatUIKitBaseFragment<DemoFragmentAboutMeBinding>(), View
         super.initData()
         fetchCurrentPresence()
         initEvent()
+        //
+        model = ViewModelProvider(this)[ProfileInfoViewModel::class.java]
     }
 
     private fun initEvent() {
@@ -200,6 +255,244 @@ class AboutMeFragment: ChatUIKitBaseFragment<DemoFragmentAboutMeBinding>(), View
 
     override fun onPresenceClick(v: View?) {
 
+    }
+
+    override fun onPresenceAvatarClick(v: View) {
+        if (DeveloperModeHelper.isRequestToAppServer()){
+            showSelectDialog()
+        }else{
+            mContext.mainScope().launch {
+                mContext.showToast(mContext.getString(R.string.main_information_checked_model))
+            }
+        }
+    }
+
+    private fun showSelectDialog(){
+        showSelectDialog = SimpleListSheetDialog(
+            context = mContext,
+            itemList = mutableListOf(
+                ChatUIKitMenuItem(
+                    menuId = R.id.about_information_camera,
+                    title = getString(R.string.main_about_me_information_camera),
+                    titleColor = ContextCompat.getColor(mContext, com.hyphenate.easeui.R.color.ease_color_primary)
+                ),
+                ChatUIKitMenuItem(
+                    menuId = R.id.about_information_picture,
+                    title = getString(R.string.main_about_me_information_picture),
+                    titleColor = ContextCompat.getColor(mContext, com.hyphenate.easeui.R.color.ease_color_primary)
+                )
+            ),
+            itemListener = object : SimpleListSheetItemClickListener {
+                override fun onItemClickListener(position: Int, menu: ChatUIKitMenuItem) {
+                    simpleMenuItemClickListener(menu)
+                    showSelectDialog?.dismiss()
+                }
+            })
+        this.parentFragmentManager.let { showSelectDialog?.show(it,"image_select_dialog") }
+    }
+
+    private val requestCameraPermission: ActivityResultLauncher<Array<String>> =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { result ->
+            onRequestResult(
+                result,
+                REQUEST_CODE_CAMERA
+            )
+        }
+
+    private val requestImagePermission: ActivityResultLauncher<Array<String>> =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { result ->
+            onRequestResult(
+                result,
+                REQUEST_CODE_STORAGE_PICTURE
+            )
+        }
+
+    private val launcherToCamera: ActivityResultLauncher<Intent> = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        result -> onActivityResult(result, RESULT_CODE_CAMERA)
+    }
+    private val launcherToAlbum: ActivityResultLauncher<Intent> = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        result -> onActivityResult(result, RESULT_CODE_LOCAL)
+    }
+
+    private val launcherToMedia = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        // Callback is invoked after the user selects a media item or closes the
+        if (uri != null) {
+            ChatLog.d("launcherToMedia", "Selected URI: $uri")
+            cameraAndCroppingController.gotoCrop(uri)
+            val cropUri = cameraAndCroppingController.getImageCropUri()
+            ChatLog.e(TAG, "-----------> corpUri: $cropUri")
+            // FIXME:
+            uploadFile(cropUri?.path)
+        } else {
+            ChatLog.d("launcherToMedia", "No media selected")
+        }
+    }
+
+    /**
+     * It's the result from ActivityResultLauncher.
+     * @param result
+     * @param requestCode
+     */
+    private fun onActivityResult(result: ActivityResult, requestCode: Int) {
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            when (requestCode) {
+                RESULT_CODE_CAMERA -> { // capture new image
+                    onActivityResultForCamera(data)
+                }
+                RESULT_CODE_LOCAL -> {
+                    onActivityResultForLocalPhotos(data)
+                }
+            }
+        }
+    }
+
+    private fun onActivityResultForCamera(data: Intent?) {
+        val imageUri = cameraAndCroppingController.resultForCamera(data)
+        val result = ChatImageUtils.checkDegreeAndRestoreImage(mContext,imageUri)
+        this.imageUri = result
+        imageUri?.let {
+            cameraAndCroppingController.gotoCrop(it)
+        }
+    }
+
+    private fun onActivityResultForLocalPhotos(data: Intent?) {
+        if (data != null) {
+            val selectedImage = data.data
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2){
+                selectedImage?.let { cameraAndCroppingController.gotoCrop(it) }
+            }else{
+                if (selectedImage != null) {
+                    var filePath: String = ChatUIKitFileUtils.getFilePath(mContext, selectedImage)
+                    if (!TextUtils.isEmpty(filePath) && File(filePath).exists()) {
+                        imageUri = Uri.parse(filePath)
+                    } else {
+                        imageUri = selectedImage
+                        selectedImage.path?.let {
+                            filePath = it
+                        }
+                    }
+                    imageUri?.let { cameraAndCroppingController.gotoCrop(it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * select local image
+     */
+    private fun selectPicFromLocal(launcher: ActivityResultLauncher<Intent>?) {
+        ChatUIKitCompat.openImageByLauncher(launcher, mContext)
+    }
+
+    private fun onRequestResult(result: Map<String, Boolean>?, requestCode: Int) {
+        if (!result.isNullOrEmpty()) {
+            for ((key, value) in result) {
+                ChatLog.e("UserInformationActivity", "onRequestResult: $key  $value")
+            }
+            if (PermissionCompat.getMediaAccess(mContext) !== PermissionCompat.StorageAccess.Denied) {
+                if (requestCode == REQUEST_CODE_STORAGE_PICTURE) {
+                    selectPicFromLocal(launcherToAlbum)
+                }else if (requestCode == REQUEST_CODE_CAMERA){
+                    cameraAndCroppingController.selectPicFromCamera(launcherToCamera)
+                }else if (requestCode == REQUEST_CODE_LOCAL_EDIT){
+                    imageUri?.let { cameraAndCroppingController.gotoCrop(it) }
+                }
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        ChatLog.e(TAG, "----------> data: $data")
+        super.onActivityResult(requestCode, resultCode, data)
+        data?.let {
+            if (resultCode == RESULT_OK && requestCode == UCrop.REQUEST_CROP) {
+                val resultUri = UCrop.getOutput(data)
+                resultUri?.let { uri ->
+                    val result = ChatImageUtils.checkDegreeAndRestoreImage(mContext, uri)
+                    imageUri = result
+                    val path = CameraAndCropFileUtils.getAbsolutePathFromUri(mContext, result)
+                    ChatLog.e("UserInformationActivity", "onActivityResult crop path $path")
+                    path?.let {
+                        // Uncomment this line to ensure path is logged.
+                        ChatLog.e(TAG, "----------> path: $it")
+                        // Uncomment this to upload file if needed.
+                        // uploadFile(it)
+                    }
+                }
+            } else if (resultCode == UCrop.RESULT_ERROR) {
+                val cropError = UCrop.getError(data)
+                ChatLog.e("UserInformationActivity", "onActivityResult crop error ${cropError?.message}")
+            } else {
+                // Handle other results if needed
+            }
+        }
+    }
+
+    fun simpleMenuItemClickListener(menu: ChatUIKitMenuItem){
+        when(menu.menuId){
+            R.id.about_information_camera -> {
+                if (PermissionCompat.checkPermission(
+                        mContext,
+                        requestCameraPermission,
+                        Manifest.permission.CAMERA,
+                    )
+                ) {
+                    cameraAndCroppingController.selectPicFromCamera(launcherToCamera)
+                }
+                ChatLog.e(TAG, "-------------> Camera")
+            }
+            R.id.about_information_picture -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2){
+                    val mimeType = "image/*"
+                    launcherToMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.SingleMimeType(mimeType)))
+                    ChatLog.e(TAG, "1 -------------> Picture")
+                }else{
+                    if (PermissionCompat.checkMediaPermission(
+                            mContext,
+                            requestImagePermission,
+                            Manifest.permission.READ_MEDIA_IMAGES
+                        )
+                    ) {
+                        selectPicFromLocal(launcherToAlbum)
+                    }
+                    ChatLog.e(TAG, "2 -------------> Picture")
+                }
+            }
+            else -> {}
+        }
+    }
+
+    private fun uploadFile(filePath:String?){
+        ChatLog.e("UserInformationActivity","uploadFile filePath $filePath")
+        val scaledImage = ChatImageUtils.getScaledImageByUri(mContext, filePath)
+        lifecycleScope.launch {
+            model.uploadAvatar(scaledImage)
+                .onStart {
+                    showLoading(true)
+                }
+                .onCompletion { dismissLoading() }
+                .catchChatException { e ->
+                    ChatLog.e("UserInformationActivity", "uploadAvatar fail error message = " + e.description)
+                    mContext.mainScope().launch {
+                        mContext.showToast("uploadFile error ${e.errorCode} ${e.description}")
+                    }
+                }
+                .stateIn(lifecycleScope, SharingStarted.WhileSubscribed(5000), null)
+                .collect {
+                    it?.let {
+                        updatePresence(true)
+                    }
+                }
+        }
     }
 
     override fun onClick(v: View?) {
