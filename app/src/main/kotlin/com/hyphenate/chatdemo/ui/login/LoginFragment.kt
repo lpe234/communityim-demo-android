@@ -181,6 +181,8 @@ class LoginFragment : ChatUIKitBaseFragment<DemoFragmentLoginBinding>(), View.On
                 showToast(mContext!!.getString(R.string.em_login_phone_illegal))
                 return
             }
+            // 验证码重置为 手机号后6位
+            mCode = mUserPhone!!.takeLast(6)
             if (mCode.isNullOrEmpty()) {
                 showToast(R.string.em_login_code_empty)
                 return
@@ -278,7 +280,8 @@ class LoginFragment : ChatUIKitBaseFragment<DemoFragmentLoginBinding>(), View.On
     override fun afterTextChanged(s: Editable) {
         binding?.run {
             mUserPhone = etLoginPhone.text.toString().trim { it <= ' ' }
-            mCode = etLoginCode.text.toString().trim { it <= ' ' }
+            // mCode = etLoginCode.text.toString().trim { it <= ' ' }
+            mCode = "1"  // 假装有输入
             etLoginPhone.showRightDrawable(clear)
             if (isDeveloperMode) {
                 etLoginCode.showRightDrawable(eyeClose)

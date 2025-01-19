@@ -51,7 +51,8 @@
         app:layout_constraintBottom_toTopOf="@id/btn_login"
         android:layout_marginTop="@dimen/ease_size_24"
         android:orientation="horizontal"
-        android:gravity="center_vertical">
+        android:gravity="center_vertical"
+        android:visibility="gone">
 
         <EditText
             android:id="@+id/et_login_code"
